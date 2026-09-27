@@ -11,10 +11,11 @@ export interface SiteConfig {
   allowedOrigins: string[];
 }
 
-function parseSitesConfig(configStr?: string): Record<string, SiteConfig> {
-  if (!configStr) return {};
+function parseSitesConfig(config?: string | Record<string, SiteConfig>): Record<string, SiteConfig> {
+  if (!config) return {};
+  if (typeof config === 'object') return config;
   try {
-    return JSON.parse(configStr);
+    return JSON.parse(config);
   } catch (err) {
     console.error('Failed to parse SITES_CONFIG JSON:', err);
     return {};
