@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "contact-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-09-23",
+  "preview_urls": false,
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "persist": true
+    }
+  }
+}
