@@ -50,24 +50,22 @@ In your Cloudflare Dashboard (under **Settings > Variables and Secrets**) or loc
 
 ```json
 {
-  "signageandboard": {
-    "fromEmail": "Signage & Boards <abc@xyz.com>",
-    "toEmail": "abc@xyz.com",
-    "defaultSubject": "New Signage Quotation Inquiry",
+  "site-one": {
+    "fromEmail": "Website Notifications <notifications@send.example.com>",
+    "toEmail": "inbox@example.com",
+    "defaultSubject": "New Website Inquiry",
     "allowedOrigins": [
-      "https://www.signageandboard.com",
-      "https://signageandboard.com",
+      "https://example.com",
+      "https://www.example.com",
       "http://localhost:5173"
     ]
   },
-  "ashishjha-dev": {
-    "fromEmail": "Portfolio Contact <abc@xyz.com>",
-    "toEmail": "abc@xyz.com",
-    "defaultSubject": "New Portfolio Contact Message",
+  "site-two": {
+    "fromEmail": "Portfolio Contact <notifications@send.portfolio.dev>",
+    "toEmail": "contact@portfolio.dev",
+    "defaultSubject": "New Contact Message",
     "allowedOrigins": [
-      "https://ashishjha.dev",
-      "https://www.ashishjha.dev",
-      "https://ashishoffline.github.io",
+      "https://portfolio.dev",
       "http://localhost:3000"
     ]
   }
@@ -85,15 +83,14 @@ await fetch('https://contact-api.<your-subdomain>.workers.dev', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    _site: 'signageandboard', // Must match key in SITES_CONFIG
+    _site: 'site-one',        // Must match key in SITES_CONFIG
     _hp: '',                  // Honeypot field (hidden from real users)
 
-    // Any dynamic fields you want in the email:
-    'Customer Name': 'Mukesh Sharma',
-    'Mobile Number': '+91 9899 88 5686',
-    'Email Address': 'mukesh@company.com',
-    'Product of Interest': '3D Brass LED Letters',
-    'Project Details': '12x3 ft outdoor front lit with halo warm glow'
+    // Any dynamic key-value fields you want in the email notification:
+    'Customer Name': 'Jane Doe',
+    'Mobile Number': '+1 555 123 4567',
+    'Email Address': 'jane@example.com',
+    'Message': 'Hello, I would like to request more information.'
   })
 });
 ```
