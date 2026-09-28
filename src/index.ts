@@ -128,9 +128,6 @@ export default {
           <table style="width: 100%; border-collapse: collapse; margin-top: 16px;">
             ${rows}
           </table>
-          <p style="margin-top: 24px; padding-top: 12px; border-top: 1px solid #f1f5f9; font-size: 12px; color: #94a3b8; text-align: center;">
-            Dispatched securely via <strong>contact-api</strong> &bull; Cloudflare Worker &amp; Resend
-          </p>
         </div>
       `;
 
