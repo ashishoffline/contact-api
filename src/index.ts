@@ -41,6 +41,7 @@ export interface ValidationSuccess {
   valid: true;
   site: SiteConfig;
   corsHeaders: Record<string, string>;
+  data: ContactSubmission;
 }
 
 export interface ValidationFailure {
@@ -222,22 +223,37 @@ function validateSubmission(
     };
   }
 
+  const cleanName = name.replace(/[\r\n<>]/g, '').trim();
+
+  const sanitizedSubmission: ContactSubmission = {
+    site: siteKey,
+    name: cleanName,
+    email,
+    message,
+    phone: data.phone !== undefined && data.phone !== null ? String(data.phone).trim() : undefined,
+    product: typeof data.product === 'string' && data.product.trim() !== '' ? data.product.trim() : undefined,
+    inquiryChannel: typeof data.inquiryChannel === 'string' && data.inquiryChannel.trim() !== '' ? data.inquiryChannel.trim() : undefined,
+    subject: typeof data.subject === 'string' && data.subject.trim() !== '' ? data.subject.trim() : undefined,
+    hp: typeof data.hp === 'string' ? data.hp.trim() : undefined,
+    recaptchaToken: typeof data.recaptchaToken === 'string' ? data.recaptchaToken.trim() : undefined,
+  };
+
   return {
     valid: true,
     site,
-    corsHeaders: siteCors
+    corsHeaders: siteCors,
+    data: sanitizedSubmission
   };
 }
 
 /**
  * Builds the HTML table representation of the submitted inquiry.
  */
-function buildEmailHtml(data: Record<string, any>): string {
+function buildEmailHtml(data: ContactSubmission): string {
   const rows = DISPLAY_FIELDS
     .map(({ key, label }) => {
       const rawVal = data[key];
       if (rawVal === undefined || rawVal === null) return null;
-      if (typeof rawVal !== 'string' && typeof rawVal !== 'number') return null;
       const val = String(rawVal).trim();
       if (val === '') return null;
 
@@ -355,11 +371,11 @@ export default {
         );
       }
 
-      const { site, corsHeaders } = validation;
+      const { site, corsHeaders, data: submission } = validation;
 
       // 4. Optional Google reCAPTCHA Verification
-      if (data.recaptchaToken && env.RECAPTCHA_SECRET_KEY) {
-        const isHuman = await verifyRecaptcha(String(data.recaptchaToken).trim(), env.RECAPTCHA_SECRET_KEY);
+      if (submission.recaptchaToken && env.RECAPTCHA_SECRET_KEY) {
+        const isHuman = await verifyRecaptcha(submission.recaptchaToken, env.RECAPTCHA_SECRET_KEY);
         if (!isHuman) {
           return problemDetails('Validation Failed', 400, 'reCAPTCHA verification failed.', corsHeaders, [
             { field: 'recaptchaToken', message: 'CAPTCHA token verification failed.' }
@@ -368,18 +384,17 @@ export default {
       }
 
       // 5. Build HTML & Deliver Email
-      const subject = typeof data.subject === 'string' && data.subject.trim() !== ''
-        ? data.subject.trim()
-        : site.defaultSubject || 'New Website Inquiry';
+      const subject = submission.subject || site.defaultSubject || 'New Website Inquiry';
+      const replyTo = `${submission.name} <${submission.email}>`;
+      const htmlContent = buildEmailHtml(submission);
 
-      const htmlContent = buildEmailHtml(data);
       const delivery = await sendEmail(
         env.RESEND_API_KEY,
         site.fromEmail,
         site.toEmail,
         subject,
         htmlContent,
-        String(data.email).trim()
+        replyTo
       );
 
       if (!delivery.ok) {
