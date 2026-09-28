@@ -11,6 +11,72 @@ export interface SiteConfig {
   allowedOrigins: string[];
 }
 
+/**
+ * Strict API Contract for incoming contact submissions.
+ */
+export interface ContactSubmission {
+  // Routing & Security
+  site: string;              // Authorized site identifier in SITES_CONFIG
+  subject?: string;          // Optional custom dynamic email subject
+  hp?: string;               // Optional honeypot trap field (must be empty)
+  recaptchaToken?: string;   // Optional Google reCAPTCHA v3 token
+
+  // Mandatory Core User Info
+  name: string;              // Customer / Sender Name
+  email: string;             // Customer / Sender Email (used for reply_to)
+  message: string;           // Inquiry message / requirements
+
+  // Optional Form Fields
+  phone?: string;            // Contact phone number
+  product?: string;          // Product of interest (for catalog quotes)
+  inquiryChannel?: string;   // Source channel ('Website Form', 'WhatsApp')
+}
+
+export interface ValidationError {
+  field: string;
+  message: string;
+}
+
+export interface ValidationSuccess {
+  valid: true;
+  site: SiteConfig;
+  corsHeaders: Record<string, string>;
+}
+
+export interface ValidationFailure {
+  valid: false;
+  status: number;
+  title: string;
+  detail: string;
+  corsHeaders: Record<string, string>;
+  errors?: ValidationError[];
+}
+
+export type ValidationOutcome = ValidationSuccess | ValidationFailure;
+
+interface FormFieldDefinition {
+  key: keyof ContactSubmission;
+  label: string;
+}
+
+const DISPLAY_FIELDS: FormFieldDefinition[] = [
+  { key: 'name', label: 'Name' },
+  { key: 'email', label: 'Email' },
+  { key: 'phone', label: 'Phone' },
+  { key: 'product', label: 'Product' },
+  { key: 'inquiryChannel', label: 'Inquiry Channel' },
+  { key: 'message', label: 'Message' }
+];
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function parseSitesConfig(config?: string | Record<string, SiteConfig>): Record<string, SiteConfig> {
   if (!config) return {};
   if (typeof config === 'object') return config;
@@ -22,7 +88,7 @@ function parseSitesConfig(config?: string | Record<string, SiteConfig>): Record<
   }
 }
 
-function getCorsHeaders(origin: string, allowedOrigins: string[]) {
+function getCorsHeaders(origin: string, allowedOrigins: string[]): Record<string, string> {
   const isAllowed = allowedOrigins.includes(origin) || origin.startsWith('http://localhost:');
 
   return {
@@ -33,140 +99,302 @@ function getCorsHeaders(origin: string, allowedOrigins: string[]) {
   };
 }
 
+/**
+ * Generates an RFC 9457 / RFC 7807 Problem Details response.
+ */
+function problemDetails(
+  title: string,
+  status: number,
+  detail: string,
+  corsHeaders: Record<string, string>,
+  errors?: ValidationError[]
+): Response {
+  const body: Record<string, any> = {
+    type: 'about:blank',
+    title,
+    status,
+    detail
+  };
+
+  if (errors && errors.length > 0) {
+    body.errors = errors;
+  }
+
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'application/problem+json'
+    }
+  });
+}
+
+/**
+ * Validates the submission payload, authorization, and collects all field-level validation errors.
+ */
+function validateSubmission(
+  data: Record<string, any>,
+  sites: Record<string, SiteConfig>,
+  origin: string,
+  allAllowedOrigins: string[]
+): ValidationOutcome {
+  const genericCors = getCorsHeaders(origin, allAllowedOrigins);
+
+  // 1. Site Identifier
+  const siteKey = typeof data.site === 'string' ? data.site.trim() : '';
+  if (!siteKey) {
+    return {
+      valid: false,
+      status: 400,
+      title: 'Bad Request',
+      detail: 'Missing required field: site.',
+      corsHeaders: genericCors,
+      errors: [{ field: 'site', message: 'Site identifier is required.' }]
+    };
+  }
+
+  const site = sites[siteKey];
+  if (!site) {
+    return {
+      valid: false,
+      status: 403,
+      title: 'Forbidden',
+      detail: 'Unauthorized or unregistered site identifier.',
+      corsHeaders: genericCors
+    };
+  }
+
+  const siteCors = getCorsHeaders(origin, site.allowedOrigins);
+
+  // 2. Origin Verification
+  const isOriginAllowed = site.allowedOrigins.includes(origin) || origin.startsWith('http://localhost:');
+  if (origin && !isOriginAllowed) {
+    return {
+      valid: false,
+      status: 403,
+      title: 'Forbidden',
+      detail: 'Request origin is not authorized for this site.',
+      corsHeaders: siteCors
+    };
+  }
+
+  // 3. Collect all user-field validation errors
+  const errors: ValidationError[] = [];
+
+  const name = typeof data.name === 'string' ? data.name.trim() : '';
+  if (!name) {
+    errors.push({ field: 'name', message: 'Name is required.' });
+  } else if (name.length > 100) {
+    errors.push({ field: 'name', message: 'Name must not exceed 100 characters.' });
+  }
+
+  const email = typeof data.email === 'string' ? data.email.trim() : '';
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!email) {
+    errors.push({ field: 'email', message: 'Email address is required.' });
+  } else if (!emailRegex.test(email)) {
+    errors.push({ field: 'email', message: 'Email address format is invalid.' });
+  } else if (email.length > 254) {
+    errors.push({ field: 'email', message: 'Email address must not exceed 254 characters.' });
+  }
+
+  const message = typeof data.message === 'string' ? data.message.trim() : '';
+  if (!message) {
+    errors.push({ field: 'message', message: 'Message is required.' });
+  } else if (message.length > 5000) {
+    errors.push({ field: 'message', message: 'Message must not exceed 5,000 characters.' });
+  }
+
+  if (data.phone !== undefined && data.phone !== null) {
+    if (typeof data.phone !== 'string' && typeof data.phone !== 'number') {
+      errors.push({ field: 'phone', message: 'Phone must be a valid string or number.' });
+    }
+  }
+
+  if (errors.length > 0) {
+    return {
+      valid: false,
+      status: 400,
+      title: 'Validation Failed',
+      detail: 'One or more fields in the submission are invalid.',
+      corsHeaders: siteCors,
+      errors
+    };
+  }
+
+  return {
+    valid: true,
+    site,
+    corsHeaders: siteCors
+  };
+}
+
+/**
+ * Builds the HTML table representation of the submitted inquiry.
+ */
+function buildEmailHtml(data: Record<string, any>): string {
+  const rows = DISPLAY_FIELDS
+    .map(({ key, label }) => {
+      const rawVal = data[key];
+      if (rawVal === undefined || rawVal === null) return null;
+      if (typeof rawVal !== 'string' && typeof rawVal !== 'number') return null;
+      const val = String(rawVal).trim();
+      if (val === '') return null;
+
+      return `
+        <tr>
+          <td style="padding: 10px 14px; border: 1px solid #e2e8f0; font-weight: 600; color: #1e293b; background: #f8fafc; width: 35%;">
+            ${escapeHtml(label)}
+          </td>
+          <td style="padding: 10px 14px; border: 1px solid #e2e8f0; color: #334155;">
+            ${escapeHtml(val).replace(/\n/g, '<br>')}
+          </td>
+        </tr>
+      `;
+    })
+    .filter(Boolean)
+    .join('');
+
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+      <h2 style="color: #18254c; margin-top: 0; border-bottom: 2px solid #d57c48; padding-bottom: 10px; font-size: 20px;">
+        Inquiry Details
+      </h2>
+      <table style="width: 100%; border-collapse: collapse; margin-top: 16px;">
+        ${rows}
+      </table>
+    </div>
+  `;
+}
+
+/**
+ * Verifies Google reCAPTCHA v3 token.
+ */
+async function verifyRecaptcha(token: string, secretKey: string): Promise<boolean> {
+  try {
+    const res = await fetch('https://www.google.com/recaptcha/api/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `secret=${encodeURIComponent(secretKey)}&response=${encodeURIComponent(token)}`
+    });
+    const data = await res.json() as { success: boolean };
+    return Boolean(data.success);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Dispatches the transactional email via Resend REST API.
+ */
+async function sendEmail(
+  apiKey: string,
+  from: string,
+  to: string,
+  subject: string,
+  html: string,
+  replyTo: string
+): Promise<{ ok: boolean; errorText?: string }> {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject,
+      html,
+      reply_to: replyTo
+    })
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    return { ok: false, errorText };
+  }
+  return { ok: true };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const origin = request.headers.get('Origin') || '';
     const sites = parseSitesConfig(env.SITES_CONFIG);
-
-    // Collect all allowed origins across all configured sites for generic preflight
     const allAllowedOrigins = Object.values(sites).flatMap((s) => s.allowedOrigins);
+    const genericCors = getCorsHeaders(origin, allAllowedOrigins);
 
-    // 1. Handle CORS Preflight request
+    // 1. CORS Preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, {
-        headers: getCorsHeaders(origin, allAllowedOrigins)
-      });
+      return new Response(null, { headers: genericCors });
     }
 
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-        status: 405,
-        headers: { ...getCorsHeaders(origin, allAllowedOrigins), 'Content-Type': 'application/json' }
-      });
+      return problemDetails('Method Not Allowed', 405, 'Only POST requests are supported.', genericCors);
     }
 
     try {
       const data = await request.json() as Record<string, any>;
 
-      // 2. Honeypot spam defense (silent drop if bot populated hidden input)
-      if (data._hp && String(data._hp).trim() !== '') {
+      // 2. Silent Honeypot Drop (drops automated bots without notification)
+      if (typeof data.hp === 'string' && data.hp.trim() !== '') {
         return new Response(JSON.stringify({ success: true, message: 'Message sent' }), {
-          headers: { ...getCorsHeaders(origin, allAllowedOrigins), 'Content-Type': 'application/json' }
+          headers: { ...genericCors, 'Content-Type': 'application/json' }
         });
       }
 
-      // 3. Validate authorized site key from server-side config
-      const siteKey = String(data._site || '').trim();
-      const site = sites[siteKey];
-
-      if (!site) {
-        return new Response(JSON.stringify({ error: 'Unauthorized or unregistered site identifier' }), {
-          status: 403,
-          headers: { ...getCorsHeaders(origin, allAllowedOrigins), 'Content-Type': 'application/json' }
-        });
+      // 3. Centralized Validation (collects all field errors in RFC 9457 standard)
+      const validation = validateSubmission(data, sites, origin, allAllowedOrigins);
+      if (!validation.valid) {
+        return problemDetails(
+          validation.title,
+          validation.status,
+          validation.detail,
+          validation.corsHeaders,
+          validation.errors
+        );
       }
 
-      const siteCorsHeaders = getCorsHeaders(origin, site.allowedOrigins);
-
-      // Verify origin against this specific site's allowed domains
-      const isOriginAllowed = site.allowedOrigins.includes(origin) || origin.startsWith('http://localhost:');
-      if (origin && !isOriginAllowed) {
-        return new Response(JSON.stringify({ error: 'Request origin not permitted for this site' }), {
-          status: 403,
-          headers: { ...siteCorsHeaders, 'Content-Type': 'application/json' }
-        });
-      }
+      const { site, corsHeaders } = validation;
 
       // 4. Optional Google reCAPTCHA Verification
-      if (data._recaptchaToken && env.RECAPTCHA_SECRET_KEY) {
-        const verifyRes = await fetch('https://www.google.com/recaptcha/api/siteverify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: `secret=${encodeURIComponent(env.RECAPTCHA_SECRET_KEY)}&response=${encodeURIComponent(data._recaptchaToken)}`
-        });
-        const verifyData = await verifyRes.json() as { success: boolean };
-        if (!verifyData.success) {
-          return new Response(JSON.stringify({ error: 'CAPTCHA verification failed' }), {
-            status: 400,
-            headers: { ...siteCorsHeaders, 'Content-Type': 'application/json' }
-          });
+      if (data.recaptchaToken && env.RECAPTCHA_SECRET_KEY) {
+        const isHuman = await verifyRecaptcha(String(data.recaptchaToken).trim(), env.RECAPTCHA_SECRET_KEY);
+        if (!isHuman) {
+          return problemDetails('Validation Failed', 400, 'reCAPTCHA verification failed.', corsHeaders, [
+            { field: 'recaptchaToken', message: 'CAPTCHA token verification failed.' }
+          ]);
         }
       }
 
-      // 5. Build dynamic HTML table from form submission data
-      const subject = data._subject || site.defaultSubject || 'New Website Inquiry';
-      const customerEmail = data.email || data.Email || data.email_address || undefined;
+      // 5. Build HTML & Deliver Email
+      const subject = typeof data.subject === 'string' && data.subject.trim() !== ''
+        ? data.subject.trim()
+        : site.defaultSubject || 'New Website Inquiry';
 
-      const rows = Object.entries(data)
-        .filter(([key]) => !key.startsWith('_')) // Exclude meta fields
-        .map(([key, val]) => `
-          <tr>
-            <td style="padding: 10px 14px; border: 1px solid #e2e8f0; font-weight: 600; color: #1e293b; background: #f8fafc; width: 35%;">
-              ${key}
-            </td>
-            <td style="padding: 10px 14px; border: 1px solid #e2e8f0; color: #334155;">
-              ${String(val).replace(/\n/g, '<br>')}
-            </td>
-          </tr>
-        `).join('');
+      const htmlContent = buildEmailHtml(data);
+      const delivery = await sendEmail(
+        env.RESEND_API_KEY,
+        site.fromEmail,
+        site.toEmail,
+        subject,
+        htmlContent,
+        String(data.email).trim()
+      );
 
-      const htmlContent = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
-          <h2 style="color: #18254c; margin-top: 0; border-bottom: 2px solid #d57c48; padding-bottom: 10px; font-size: 20px;">
-            Inquiry Details
-          </h2>
-          <table style="width: 100%; border-collapse: collapse; margin-top: 16px;">
-            ${rows}
-          </table>
-        </div>
-      `;
-
-      // 6. Deliver email via Resend REST API
-      const resendResponse = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: site.fromEmail,
-          to: [site.toEmail],
-          subject: subject,
-          html: htmlContent,
-          reply_to: customerEmail
-        })
-      });
-
-      if (!resendResponse.ok) {
-        const errorText = await resendResponse.text();
-        console.error('Resend API Error:', errorText);
-        return new Response(JSON.stringify({ error: 'Failed to deliver email' }), {
-          status: 500,
-          headers: { ...siteCorsHeaders, 'Content-Type': 'application/json' }
-        });
+      if (!delivery.ok) {
+        console.error('Resend API Error:', delivery.errorText);
+        return problemDetails('Bad Gateway', 502, 'Failed to dispatch email via upstream provider.', corsHeaders);
       }
 
       return new Response(JSON.stringify({ success: true, message: 'Inquiry sent successfully' }), {
         status: 200,
-        headers: { ...siteCorsHeaders, 'Content-Type': 'application/json' }
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
 
     } catch (err: any) {
       console.error('Worker error:', err);
-      return new Response(JSON.stringify({ error: err.message || 'Internal server error' }), {
-        status: 500,
-        headers: { ...getCorsHeaders(origin, allAllowedOrigins), 'Content-Type': 'application/json' }
-      });
+      return problemDetails('Internal Server Error', 500, err.message || 'An unexpected error occurred.', genericCors);
     }
   }
 };

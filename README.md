@@ -74,26 +74,47 @@ In your Cloudflare Dashboard (under **Settings > Variables and Secrets**) or loc
 
 ---
 
-## Client Website Usage
+## API Contract & Client Usage
 
-From any authorized frontend website, submit inquiries using a standard `fetch()` request:
+Submit inquiries as standard JSON using `POST /` with `Content-Type: application/json`:
+
+### Request Schema (`ContactSubmission`)
+
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `site` | `string` | **Yes** | Authorized site identifier matching a key in `SITES_CONFIG`. |
+| `name` | `string` | **Yes** | Sender / customer name. |
+| `email` | `string` | **Yes** | Sender email address (validated and bound directly to `reply_to`). |
+| `message` | `string` | **Yes** | Inquiry message or requirements. |
+| `phone` | `string` | No | Customer phone or mobile number. |
+| `product` | `string` | No | Product of interest (for catalog quotes). |
+| `inquiryChannel` | `string` | No | Source channel (e.g. `'Website Form'`, `'WhatsApp'`). |
+| `subject` | `string` | No | Custom dynamic email subject line. |
+| `hp` | `string` | No | Honeypot trap field (must be empty for real users). |
+| `recaptchaToken` | `string` | No | Google reCAPTCHA v3 client token. |
+
+Any undeclared or unrecognized fields in the JSON payload are discarded.
+
+### Example Client Request
 
 ```javascript
 await fetch('https://contact-api.<your-subdomain>.workers.dev', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    _site: 'site-one',        // Must match key in SITES_CONFIG
-    _hp: '',                  // Honeypot field (hidden from real users)
-
-    // Any dynamic key-value fields you want in the email notification:
-    'Customer Name': 'Jane Doe',
-    'Mobile Number': '+1 555 123 4567',
-    'Email Address': 'jane@example.com',
-    'Message': 'Hello, I would like to request more information.'
+    site: 'site-one',
+    name: 'Jane Doe',
+    email: 'jane@example.com',
+    phone: '+1 555 123 4567',
+    message: 'Hello, I would like to request a quotation.',
+    product: 'Signage Board',
+    inquiryChannel: 'Website Form',
+    hp: ''
   })
 });
 ```
+
+Empty, null, or undefined optional fields are automatically omitted from the email body table. All values are automatically HTML-escaped for security.
 
 ---
 
