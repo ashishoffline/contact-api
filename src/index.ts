@@ -1,7 +1,8 @@
 export interface Env {
   RESEND_API_KEY: string;
   SITES_CONFIG?: string; // JSON string mapping site keys to SiteConfig
-  RECAPTCHA_SECRET_KEY?: string;
+  TURNSTILE_SECRET_KEY?: string;
+  TURNSTILE_SECRET?: string;
 }
 
 export interface SiteConfig {
@@ -19,7 +20,7 @@ export interface ContactSubmission {
   site: string;              // Authorized site identifier in SITES_CONFIG
   subject?: string;          // Optional custom dynamic email subject
   hp?: string;               // Optional honeypot trap field (must be empty)
-  recaptchaToken?: string;   // Optional Google reCAPTCHA v3 token
+  turnstileToken?: string;   // Optional Cloudflare Turnstile token
 
   // Mandatory Core User Info
   name: string;              // Customer / Sender Name
@@ -235,7 +236,11 @@ function validateSubmission(
     inquiryChannel: typeof data.inquiryChannel === 'string' && data.inquiryChannel.trim() !== '' ? data.inquiryChannel.trim() : undefined,
     subject: typeof data.subject === 'string' && data.subject.trim() !== '' ? data.subject.trim() : undefined,
     hp: typeof data.hp === 'string' ? data.hp.trim() : undefined,
-    recaptchaToken: typeof data.recaptchaToken === 'string' ? data.recaptchaToken.trim() : undefined,
+    turnstileToken: typeof data.turnstileToken === 'string' && data.turnstileToken.trim() !== ''
+      ? data.turnstileToken.trim()
+      : typeof data['cf-turnstile-response'] === 'string' && data['cf-turnstile-response'].trim() !== ''
+        ? data['cf-turnstile-response'].trim()
+        : undefined,
   };
 
   return {
@@ -283,19 +288,75 @@ function buildEmailHtml(data: ContactSubmission): string {
   `;
 }
 
+interface TurnstileSiteverifyResponse {
+  success: boolean;
+  hostname?: string;
+  action?: string;
+  'error-codes'?: string[];
+}
+
 /**
- * Verifies Google reCAPTCHA v3 token.
+ * Canonical Cloudflare Turnstile server-side siteverify validation.
  */
-async function verifyRecaptcha(token: string, secretKey: string): Promise<boolean> {
+async function verifyTurnstile(
+  token: string,
+  secretKey: string,
+  allowedOrigins: string[],
+  remoteIp?: string
+): Promise<boolean> {
+  if (typeof token !== 'string' || token.length === 0 || token.length > 2048) {
+    return false;
+  }
+
+  const expectedHostnames = new Set(
+    allowedOrigins
+      .map((origin) => {
+        try {
+          return new URL(origin).hostname.toLowerCase();
+        } catch {
+          return origin.toLowerCase().trim();
+        }
+      })
+      .filter(Boolean)
+  );
+
   try {
-    const res = await fetch('https://www.google.com/recaptcha/api/siteverify', {
+    const body = new URLSearchParams({
+      secret: secretKey,
+      response: token,
+      ...(remoteIp ? { remoteip: remoteIp } : {})
+    });
+
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `secret=${encodeURIComponent(secretKey)}&response=${encodeURIComponent(token)}`
+      signal: AbortSignal.timeout(10_000),
+      body: body.toString()
     });
-    const data = await res.json() as { success: boolean };
-    return Boolean(data.success);
-  } catch {
+
+    if (!res.ok) {
+      console.error(`Turnstile siteverify HTTP error: ${res.status}`);
+      return false;
+    }
+
+    const result = await res.json() as TurnstileSiteverifyResponse;
+    if (!result.success) {
+      console.error('Turnstile verification failed:', result['error-codes']);
+      return false;
+    }
+
+    // Validate hostname against site's allowed hostnames if available
+    if (result.hostname && expectedHostnames.size > 0) {
+      const resultHost = result.hostname.toLowerCase();
+      if (!expectedHostnames.has(resultHost)) {
+        console.error(`Turnstile hostname mismatch: received ${resultHost}, expected one of`, Array.from(expectedHostnames));
+        return false;
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.error('Turnstile siteverify fetch error:', err);
     return false;
   }
 }
@@ -373,12 +434,19 @@ export default {
 
       const { site, corsHeaders, data: submission } = validation;
 
-      // 4. Optional Google reCAPTCHA Verification
-      if (submission.recaptchaToken && env.RECAPTCHA_SECRET_KEY) {
-        const isHuman = await verifyRecaptcha(submission.recaptchaToken, env.RECAPTCHA_SECRET_KEY);
+      // 4. Optional Anti-Bot Verification (Cloudflare Turnstile)
+      const turnstileSecret = env.TURNSTILE_SECRET_KEY;
+      if (submission.turnstileToken && turnstileSecret) {
+        const clientIp = request.headers.get('CF-Connecting-IP') ?? undefined;
+        const isHuman = await verifyTurnstile(
+          submission.turnstileToken,
+          turnstileSecret,
+          site.allowedOrigins,
+          clientIp
+        );
         if (!isHuman) {
-          return problemDetails('Validation Failed', 400, 'reCAPTCHA verification failed.', corsHeaders, [
-            { field: 'recaptchaToken', message: 'CAPTCHA token verification failed.' }
+          return problemDetails('Validation Failed', 400, 'Cloudflare Turnstile verification failed.', corsHeaders, [
+            { field: 'turnstileToken', message: 'Turnstile verification failed.' }
           ]);
         }
       }
