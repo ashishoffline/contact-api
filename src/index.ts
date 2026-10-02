@@ -2,7 +2,6 @@ export interface Env {
   RESEND_API_KEY: string;
   SITES_CONFIG?: string; // JSON string mapping site keys to SiteConfig
   TURNSTILE_SECRET_KEY?: string;
-  TURNSTILE_SECRET?: string;
 }
 
 export interface SiteConfig {
@@ -434,9 +433,14 @@ export default {
 
       const { site, corsHeaders, data: submission } = validation;
 
-      // 4. Optional Anti-Bot Verification (Cloudflare Turnstile)
+      // 4. Anti-Bot Verification (Cloudflare Turnstile)
       const turnstileSecret = env.TURNSTILE_SECRET_KEY;
-      if (submission.turnstileToken && turnstileSecret) {
+      if (turnstileSecret) {
+        if (!submission.turnstileToken) {
+          return problemDetails('Validation Failed', 400, 'Cloudflare Turnstile token is required.', corsHeaders, [
+            { field: 'turnstileToken', message: 'Missing bot verification token.' }
+          ]);
+        }
         const clientIp = request.headers.get('CF-Connecting-IP') ?? undefined;
         const isHuman = await verifyTurnstile(
           submission.turnstileToken,
